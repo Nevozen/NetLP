@@ -8,29 +8,41 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "pnpm db:generate && next dev",
+    "build": "pnpm db:generate && next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "next typegen && tsc --noEmit",
+    "typecheck": "pnpm db:generate && next typegen && tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "pnpm db:generate && vitest run --config vitest.integration.config.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "owner:create": "pnpm db:generate && tsx scripts/create-owner.ts"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "better-auth": "1.7.28",
     "decimal.js": "10.6.0",
+    "dotenv": "18.0.10",
     "next": "16.4.6",
+    "pg": "8.23.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24",
+    "@types/pg": "8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "9.39.5",
     "eslint-config-next": "16.4.6",
     "prettier": "3.10.1",
+    "prisma": "7.10.1",
+    "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vitest": "5.1.1"
   }
