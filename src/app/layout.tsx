@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import "@fontsource-variable/manrope";
+import "@fontsource-variable/space-grotesk";
+import "./globals.css";
 
 export const metadata: Metadata = {
   title: { default: "LPStacks", template: "%s | LPStacks" },

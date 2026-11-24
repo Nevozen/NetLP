@@ -190,6 +190,29 @@ export function evaluate(
       "At least one mark observation is more than 15 minutes from the evaluation time or is coarse.",
     );
   }
+  if (
+    !ledger.closedAt &&
+    prices.some(
+      (quote) =>
+        quote.observedAt &&
+        Date.parse(at) - Date.parse(quote.observedAt) > MARK_STALE_MS &&
+        [
+          ledger.initial,
+          ledger.wallet,
+          ledger.external,
+          principal,
+          unclaimed,
+        ].some(
+          (amounts) =>
+            amounts[quote.asset] != null && new D(amounts[quote.asset]!).gt(0),
+        ),
+    )
+  ) {
+    notify(
+      "STALE",
+      "A reference price used for the strategy or benchmark was observed over one hour before the evaluation.",
+    );
+  }
 
   const equivalents = Object.fromEntries(
     market.pair.map((token) => {

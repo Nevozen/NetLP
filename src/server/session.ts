@@ -10,9 +10,10 @@ export const preferences = {
   denomination: "USD",
 };
 
-export const getSession = cache(async () =>
-  auth().api.getSession({ headers: await headers() }),
-);
+export const getSession = cache(async () => {
+  const requestHeaders = await headers();
+  return auth().api.getSession({ headers: requestHeaders });
+});
 
 export const requireUser = cache(async () => {
   const session = await getSession();
