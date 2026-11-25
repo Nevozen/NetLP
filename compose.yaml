@@ -1,0 +1,48 @@
+name: lpstacks
+
+x-app-environment: &app-environment
+  DATABASE_URL: postgresql://lpstacks:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/lpstacks
+  BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
+  COINGECKO_DEMO_KEY: ${COINGECKO_DEMO_KEY:-}
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: lpstacks
+      POSTGRES_DB: lpstacks
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "lpstacks", "-d", "lpstacks"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+    environment: *app-environment
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tools:
+    profiles: ["ops"]
+    build:
+      context: .
+      target: tools
+    environment: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

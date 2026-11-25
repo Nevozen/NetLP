@@ -1,0 +1,190 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            String          @id
+  name          String
+  email         String          @unique
+  emailVerified Boolean         @default(false)
+  image         String?
+  createdAt     DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime        @updatedAt @db.Timestamptz(3)
+  sessions      Session[]
+  accounts      Account[]
+  strategies    Strategy[]
+  settings      Preference?
+  revisions     EventRevision[]
+}
+
+model Session {
+  id        String   @id
+  token     String   @unique
+  expiresAt DateTime @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(3)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(3)
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(3)
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([identifier])
+}
+
+model RateLimit {
+  id          String @id
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+}
+
+model Preference {
+  userId       String @id
+  timezone     String @default("Asia/Jakarta")
+  theme        String @default("system")
+  denomination String @default("USD")
+  user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Strategy {
+  id            String           @id @db.Uuid
+  requestDigest String           @db.Char(64)
+  ownerId       String
+  chainId       String
+  market        Json
+  name          String
+  protocol      String
+  notes         String?
+  walletAddress String?
+  positionRef   String?
+  openedAt      DateTime         @db.Timestamptz(3)
+  closedAt      DateTime?        @db.Timestamptz(3)
+  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
+  owner         User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  events        JournalEvent[]
+  quotes        PriceSet[]
+  drafts        JournalDraft[]
+  final         FinalEvaluation?
+
+  @@unique([id, ownerId, chainId])
+  @@index([ownerId, closedAt, openedAt])
+}
+
+model JournalEvent {
+  id            String          @id @db.Uuid
+  strategyId    String          @db.Uuid
+  ownerId       String
+  chainId       String
+  kind          String
+  occurredAt    DateTime        @db.Timestamptz(3)
+  sequence      Int
+  txHash        String?
+  actionIndex   Int?
+  hasNetworkFee Boolean
+  strategy      Strategy        @relation(fields: [strategyId, ownerId, chainId], references: [id, ownerId, chainId], onDelete: Restrict)
+  revisions     EventRevision[]
+
+  @@unique([strategyId, id])
+  @@unique([strategyId, sequence])
+  @@unique([ownerId, chainId, txHash, actionIndex])
+  @@index([strategyId, occurredAt, sequence])
+}
+
+model EventRevision {
+  id         String       @id @db.Uuid
+  strategyId String       @db.Uuid
+  eventId    String       @db.Uuid
+  version    Int
+  digest     String       @db.Char(64)
+  occurredAt DateTime     @db.Timestamptz(3)
+  facts      Json
+  format     Int          @default(1)
+  priceSetId String       @db.Uuid
+  reason     String?
+  actorId    String
+  createdAt  DateTime     @default(now()) @db.Timestamptz(3)
+  event      JournalEvent @relation(fields: [strategyId, eventId], references: [strategyId, id], onDelete: Restrict)
+  prices     PriceSet     @relation(fields: [strategyId, priceSetId], references: [strategyId, id], onDelete: Restrict)
+  actor      User         @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@unique([eventId, version])
+}
+
+enum PricePurpose {
+  EVENT
+  MARK
+}
+
+model PriceSet {
+  id         String           @id @default(uuid()) @db.Uuid
+  strategyId String           @db.Uuid
+  at         DateTime         @db.Timestamptz(3)
+  purpose    PricePurpose
+  quotes     Json
+  createdAt  DateTime         @default(now()) @db.Timestamptz(3)
+  strategy   Strategy         @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  revisions  EventRevision[]
+  final      FinalEvaluation?
+
+  @@unique([strategyId, id])
+  @@index([strategyId, purpose, at(sort: Desc), createdAt(sort: Desc)])
+}
+
+model JournalDraft {
+  id         String   @id @db.Uuid
+  strategyId String   @db.Uuid
+  fields     Json
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+  strategy   Strategy @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+
+  @@index([strategyId, updatedAt])
+}
+
+model FinalEvaluation {
+  strategyId  String   @id @db.Uuid
+  at          DateTime @db.Timestamptz(3)
+  version     String
+  priceSetId  String   @db.Uuid
+  revisionIds Json
+  results     Json
+  strategy    Strategy @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  prices      PriceSet @relation(fields: [strategyId, priceSetId], references: [strategyId, id], onDelete: Restrict)
+
+  @@unique([strategyId, priceSetId])
+}
