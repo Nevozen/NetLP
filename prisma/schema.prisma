@@ -20,6 +20,7 @@ model User {
   strategies    Strategy[]
   settings      Preference?
   revisions     EventRevision[]
+  walletWatches WalletWatch[]
 }
 
 model Session {
@@ -80,6 +81,74 @@ model Preference {
   theme        String @default("system")
   denomination String @default("USD")
   user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum WalletSource {
+  ALCHEMY
+  CSV
+  HASH
+}
+
+enum WalletStatus {
+  DETECTED
+  CONFIRMING
+  READY
+  NEEDS_REVIEW
+  ACTIVITY_ONLY
+  POSTED
+  UNRELATED
+}
+
+model WalletWatch {
+  ownerId      String
+  chainId      String
+  address      String
+  generation   Int              @default(1)
+  enabled      Boolean          @default(true)
+  recent       Boolean
+  startBlock   BigInt?
+  nextBlock    BigInt?
+  cursor       Json?
+  lease        String?          @db.Uuid
+  leaseUntil   DateTime?        @db.Timestamptz(3)
+  nextSyncAt   DateTime?        @db.Timestamptz(3)
+  lastSyncedAt DateTime?        @db.Timestamptz(3)
+  issue        String?
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
+  owner        User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  activities   WalletActivity[]
+
+  @@id([ownerId, chainId])
+}
+
+model WalletActivity {
+  id          String         @id @default(uuid()) @db.Uuid
+  ownerId     String
+  chainId     String
+  address     String
+  txHash      String
+  sources     WalletSource[]
+  status      WalletStatus   @default(DETECTED)
+  ignored     Boolean        @default(false)
+  revision    Int            @default(0)
+  blockNumber BigInt?
+  blockHash   String?
+  txIndex     Int?
+  occurredAt  DateTime?      @db.Timestamptz(3)
+  topLevel    Boolean        @default(false)
+  hasTokens   Boolean        @default(false)
+  hasNfts     Boolean        @default(false)
+  evidence    Json?
+  draft       Json?
+  retryAt     DateTime?      @db.Timestamptz(3)
+  attempts    Int            @default(0)
+  createdAt   DateTime       @default(now()) @db.Timestamptz(3)
+  watch       WalletWatch    @relation(fields: [ownerId, chainId], references: [ownerId, chainId], onDelete: Restrict)
+
+  @@unique([ownerId, chainId, address, txHash])
+  @@index([ownerId, chainId, address, status, retryAt])
+  @@index([ownerId, chainId, address, occurredAt(sort: Desc), id])
 }
 
 model Strategy {
