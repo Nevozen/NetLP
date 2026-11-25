@@ -21,6 +21,9 @@ const BATCH = 6;
 const MIN_INTERVAL = 15_000;
 const LEASE_TIME = 55_000;
 const BACKOFF = 2 * 60_000;
+const MAX_BACKOFF = 20 * 60_000;
+const MAX_PENDING = 1000;
+const pendingStatuses = ["DETECTED", "CONFIRMING"] satisfies WalletStatus[];
 
 const cursorSchema = z.object({
   from: z.string().regex(/^\d{1,24}$/),
@@ -110,6 +113,7 @@ export function createWalletSync(
         const work = await tx.walletActivity.findFirst({
           where: {
             ...walletScope(ownerId, current.address),
+            ignored: false,
             status: { in: ["DETECTED", "CONFIRMING"] },
             ...(current.enabled
               ? {}
@@ -131,6 +135,14 @@ export function createWalletSync(
     if (!watch) return;
 
     const scope = walletScope(ownerId, watch.address);
+    const candidateScope = {
+      ...scope,
+      ignored: false,
+      status: { in: pendingStatuses },
+      ...(watch.enabled
+        ? {}
+        : { sources: { hasSome: ["CSV", "HASH"] as ("CSV" | "HASH")[] } }),
+    };
     const commit = <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>) =>
       db.$transaction(async (tx) => {
         const current = await lockWatch(tx, ownerId);
@@ -147,7 +159,11 @@ export function createWalletSync(
     let issue: ProviderError | undefined;
     try {
       await rpc.assertChain();
-      if (discover && watch.enabled) {
+      if (
+        discover &&
+        watch.enabled &&
+        (await db.walletActivity.count({ where: candidateScope })) < MAX_PENDING
+      ) {
         let cursor =
           watch.cursor == null ? null : cursorSchema.parse(watch.cursor);
         try {
@@ -208,13 +224,6 @@ export function createWalletSync(
         }
       }
 
-      const candidateScope = {
-        ...scope,
-        status: { in: ["DETECTED", "CONFIRMING"] satisfies WalletStatus[] },
-        ...(watch.enabled
-          ? {}
-          : { sources: { hasSome: ["CSV", "HASH"] as ("CSV" | "HASH")[] } }),
-      };
       if (!issue || issue.kind !== "RATE_LIMIT") {
         const any = await db.walletActivity.findFirst({
           where: candidateScope,
@@ -367,14 +376,24 @@ export function createWalletSync(
           leaseUntil: null,
           ...(signal?.aborted
             ? { nextSyncAt: null }
-            : issue
+            : issue?.kind === "CURSOR"
               ? {
                   issue: issue.message,
-                  nextSyncAt: new Date(
-                    +now + (issue.kind === "CURSOR" ? MIN_INTERVAL : BACKOFF),
-                  ),
+                  nextSyncAt: new Date(+now + MIN_INTERVAL),
                 }
-              : { issue: null, lastSyncedAt: now }),
+              : issue
+                ? {
+                    issue: issue.message,
+                    syncFailures: { increment: 1 },
+                    nextSyncAt: new Date(
+                      +now +
+                        Math.min(
+                          MAX_BACKOFF,
+                          BACKOFF * 2 ** Math.min(watch.syncFailures, 4),
+                        ),
+                    ),
+                  }
+                : { issue: null, syncFailures: 0, lastSyncedAt: now }),
         },
       });
     }

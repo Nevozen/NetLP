@@ -91,6 +91,8 @@ export async function GET(request: Request) {
           null,
           evidence?.value,
           evidence?.from === watch.address ? evidence.fees.total : null,
+          null,
+          null,
         ]),
       );
     if (category !== "TX") {

@@ -10,6 +10,9 @@ import { decodeTransfers } from "@/server/onchain/activity";
 import {
   blockTime,
   operatorFee,
+  receiptFees,
+  rpcTransport,
+  type BaseReader,
   type ChainLog,
 } from "@/server/onchain/base-rpc";
 import { csvHashes } from "@/server/onchain/wallet-csv";
@@ -47,6 +50,58 @@ const singleAbi = parseAbi([
 ]);
 
 describe("wallet activity sources", () => {
+  it("distinguishes HTTP errors, invalid provider responses, and expired page keys from empty history", async () => {
+    const original = globalThis.fetch;
+    const mocked = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 429 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: -32602, message: "pageKey expired" },
+          },
+          { status: 400 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { transfers: [{ hash: "invalid" }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ jsonrpc: "2.0", id: 1, result: { transfers: [] } }),
+      );
+    try {
+      globalThis.fetch = mocked;
+      const discover = alchemyDiscovery(
+        rpcTransport(new URL("https://provider.example.test")),
+      );
+      const args = {
+        wallet: from,
+        from: 1n,
+        to: 23n,
+        direction: "out",
+        pageKey: "fixture",
+      } as const;
+      await expect(discover(args)).rejects.toMatchObject({
+        kind: "RATE_LIMIT",
+      });
+      await expect(discover(args)).rejects.toMatchObject({
+        kind: "UNAVAILABLE",
+      });
+      await expect(discover(args)).rejects.toMatchObject({ kind: "CURSOR" });
+      await expect(discover(args)).rejects.toMatchObject({ kind: "INVALID" });
+      await expect(discover(args)).resolves.toMatchObject({ hashes: [] });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   it("uses only the hash column, supporting quoted records/BOM and deduplicating exact hashes", () => {
     const text = `\uFEFF"Txn Hash","Private Notes"\r\n"${id}","a,b\nand ""quotes"""\r\n"${id.toUpperCase()}","no"\r\n"oops","=formula"\r\n`;
     expect(csvHashes(text)).toEqual({
@@ -61,12 +116,10 @@ describe("wallet activity sources", () => {
   });
 
   it("requests both directions as separate, bounded pages without using indexer amounts", async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValue({
-        pageKey: "next",
-        transfers: [{ hash: id, value: 0.000001 }, { hash: id }],
-      });
+    const request = vi.fn().mockResolvedValue({
+      pageKey: "next",
+      transfers: [{ hash: id, value: 0.000001 }, { hash: id }],
+    });
     const get = alchemyDiscovery(request);
     const cursor = scanRange(100n, 100n, 150n)!;
     const result = await get({
@@ -187,5 +240,63 @@ describe("wallet activity sources", () => {
         timestampMs: 1000200n,
       }).toISOString(),
     ).toBe("1970-01-01T00:16:40.200Z");
+  });
+
+  it("leaves the total unknown if a receipt component cannot be verified", async () => {
+    const blockHash = hash("9");
+    const tx = {
+      hash: id,
+      from,
+      to,
+      blockHash,
+      blockNumber: 123n,
+      transactionIndex: 0,
+      type: 2n,
+      input: "0x" as const,
+      value: 0n,
+    };
+    const rpc = {
+      call: vi.fn<BaseReader["call"]>().mockResolvedValue("0x"),
+    } as unknown as BaseReader;
+    const receipt = {
+      transactionHash: id,
+      from,
+      to,
+      blockHash,
+      blockNumber: 123n,
+      transactionIndex: 0,
+      status: "0x1" as const,
+      logs: [],
+      gasUsed: 21_000n,
+      effectiveGasPrice: 50n,
+    };
+    const early = { number: 123n, hash: blockHash, timestamp: 1746806400n };
+    const upgraded = { ...early, timestamp: 1764691201n };
+    expect(await receiptFees(rpc, tx, receipt, early)).toMatchObject({
+      execution: "1050000",
+      l1: null,
+      operator: "0",
+      total: null,
+    });
+    expect(
+      await receiptFees(rpc, tx, { ...receipt, l1Fee: 4n }, upgraded),
+    ).toMatchObject({
+      l1: "4",
+      operator: null,
+      total: null,
+    });
+    expect(
+      await receiptFees(
+        rpc,
+        tx,
+        {
+          ...receipt,
+          l1Fee: 4n,
+          operatorFeeScalar: 1n,
+          operatorFeeConstant: 200n,
+        },
+        upgraded,
+      ),
+    ).toMatchObject({ operator: "2100200", total: "3150204" });
   });
 });

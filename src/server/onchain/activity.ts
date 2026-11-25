@@ -50,6 +50,8 @@ export const evidenceSchema = z.object({
   transfers: z.array(transferSchema).max(MAX_TRANSFERS),
   omittedTransfers: z.number().int().nonnegative(),
   fees: z.object({
+    gasUsed: units.nullish(),
+    effectiveGasPrice: units.nullish(),
     execution: units.nullable(),
     l1: units.nullable(),
     operator: units.nullable(),
@@ -218,7 +220,8 @@ export async function verifyActivity(
   const topLevel = tx.from === wallet || tx.to === wallet;
   const walletTransfers =
     receipt.status === "0x1" ? decodeTransfers(receipt.logs, wallet) : [];
-  if (!topLevel && walletTransfers.length === 0) return "UNRELATED" as const;
+  if (!topLevel && walletTransfers.length === 0)
+    return block.number <= finalized ? ("UNRELATED" as const) : null;
   const evidence: WalletEvidence = {
     from: tx.from,
     to: tx.to,

@@ -192,7 +192,11 @@ export async function WalletActivity({
             {totalSelection && <SelectionButton />}
           </form>
           {!rows.length && (
-            <p className="muted">No wallet activity matches this view.</p>
+            <p className="muted">
+              {!watch.lastSyncedAt && !provider.indexer
+                ? "No activity has been verified for this view. Automatic discovery has not scanned this wallet."
+                : "No wallet activity matches this view."}
+            </p>
           )}
           {rows.slice(0, pageSize).map((row) => {
             const evidence = evidenceSchema.safeParse(row.evidence).data;
@@ -264,6 +268,9 @@ export async function WalletActivity({
                   {row.topLevel && <Badge>Transaction</Badge>}
                   {row.hasTokens && <Badge>ERC-20</Badge>}
                   {row.hasNfts && <Badge>NFT</Badge>}
+                  {evidence && row.status !== "CONFIRMING" && (
+                    <Badge>Finalized</Badge>
+                  )}
                   {draft?.actions.length ? <Badge>PancakeSwap v3</Badge> : null}
                 </div>
                 {draft?.warning && <p className="muted">{draft.warning}</p>}
@@ -272,6 +279,7 @@ export async function WalletActivity({
                     <summary>
                       Receipt and transfers ({transfers.length})
                     </summary>
+                    <p className="wallet-id muted">Hash: {row.txHash}</p>
                     <p className="wallet-id muted">
                       From {evidence.from} to{" "}
                       {evidence.to ?? "contract creation"} · Top-level value{" "}

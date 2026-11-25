@@ -54,9 +54,13 @@ const envelope = z.object({
 
 let alchemySlot = 0;
 
-async function rpcBody(response: Response) {
+async function rpcBody(response: Response, canHaveCursorError: boolean) {
   if (response.status === 429) throw new ProviderError("RATE_LIMIT");
-  if (!response.ok || !response.body) throw new ProviderError("UNAVAILABLE");
+  if (
+    (!response.ok && !(canHaveCursorError && response.status === 400)) ||
+    !response.body
+  )
+    throw new ProviderError("UNAVAILABLE");
   if (Number(response.headers.get("content-length")) > MAX_RESPONSE)
     throw new ProviderError("INVALID");
   const reader = response.body.getReader();
@@ -80,12 +84,13 @@ export function rpcTransport(endpoint: URL, parentSignal?: AbortSignal) {
   const alchemy = endpoint.hostname === ALCHEMY;
   return async (method: string, params: readonly unknown[] = []) => {
     try {
+      const transfers = method === "alchemy_getAssetTransfers";
       if (alchemy) {
         const now = Date.now();
         const scheduled = Math.max(now, alchemySlot);
         if (scheduled - now > 3000) throw new ProviderError("RATE_LIMIT");
         alchemySlot =
-          scheduled + (method === "alchemy_getAssetTransfers" ? 450 : 150);
+          scheduled + (transfers ? 450 : method === "eth_getLogs" ? 400 : 150);
         if (scheduled > now)
           await new Promise((resolve) => setTimeout(resolve, scheduled - now));
       }
@@ -100,26 +105,27 @@ export function rpcTransport(endpoint: URL, parentSignal?: AbortSignal) {
           ? AbortSignal.any([timeout, parentSignal])
           : timeout,
       });
-      const packet = checked(envelope, await rpcBody(response));
+      const packet = checked(envelope, await rpcBody(response, transfers));
       if (packet.error) {
         const { code, message } = packet.error;
         if (
           code === 429 ||
+          code === -32005 ||
           /rate limit|compute unit|too many requests/i.test(message)
         )
           throw new ProviderError("RATE_LIMIT");
-        if (
-          method === "alchemy_getAssetTransfers" &&
-          /page.?key|cursor/i.test(message)
-        )
+        if (transfers && /page.?key|cursor/i.test(message))
           throw new ProviderError("CURSOR");
         if (
-          method === "eth_call" &&
-          (code === 3 || /revert|historic|missing trie|pruned/i.test(message))
+          (method === "eth_call" || method === "eth_getLogs") &&
+          (code === -32601 ||
+            code === 3 ||
+            /revert|historic|missing trie|pruned/i.test(message))
         )
           throw new ProviderError("CALL");
         throw new ProviderError("UNAVAILABLE");
       }
+      if (!response.ok) throw new ProviderError("UNAVAILABLE");
       if (packet.result === undefined) throw new ProviderError("INVALID");
       return packet.result;
     } catch (error) {
@@ -188,8 +194,8 @@ const receiptSchema = z.object({
   gasUsed: hexQuantity.optional(),
   effectiveGasPrice: hexQuantity.optional(),
   l1Fee: hexQuantity.nullish(),
-  operatorFeeScalar: hexQuantity.nullish(),
-  operatorFeeConstant: hexQuantity.nullish(),
+  operatorFeeScalar: hexQuantity.refine((n) => n < 1n << 32n).nullish(),
+  operatorFeeConstant: hexQuantity.refine((n) => n < 1n << 64n).nullish(),
   logs: z.array(logSchema).max(2048),
 });
 const blockSchema = z.object({
@@ -324,6 +330,8 @@ export async function receiptFees(
     }
   }
   return {
+    gasUsed: gasUsed?.toString() ?? null,
+    effectiveGasPrice: effectiveGasPrice?.toString() ?? null,
     execution: execution?.toString() ?? null,
     l1: l1Fee?.toString() ?? null,
     operator: operator?.toString() ?? null,

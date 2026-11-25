@@ -109,6 +109,7 @@ export function createWalletStore(db: PrismaClient) {
               leaseUntil: null,
               nextSyncAt: null,
               lastSyncedAt: null,
+              syncFailures: 0,
               issue: null,
             },
           });
@@ -122,7 +123,6 @@ export function createWalletStore(db: PrismaClient) {
           enabled: !paused,
           lease: null,
           leaseUntil: null,
-          nextSyncAt: null,
         },
       });
     },
@@ -134,7 +134,7 @@ export function createWalletStore(db: PrismaClient) {
         const scope = walletScope(ownerId, watch.address);
         requireFact(
           (await tx.walletActivity.count({
-            where: { ...scope, status: "DETECTED" },
+            where: { ...scope, status: "DETECTED", ignored: false },
           })) < 1000,
           "Too many wallet transactions are waiting to be verified. Sync before importing more.",
         );
@@ -158,7 +158,7 @@ export function createWalletStore(db: PrismaClient) {
     },
     async counts(ownerId: string, watched: string) {
       const grouped = await db.walletActivity.groupBy({
-        where: walletScope(ownerId, watched),
+        where: { ...walletScope(ownerId, watched), ignored: false },
         by: ["status"],
         _count: { _all: true },
       });

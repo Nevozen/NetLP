@@ -117,6 +117,7 @@ it("retries the same range on rate limit or expired pagination without losing ca
     .fn()
     .mockResolvedValueOnce({ hashes: [txHash], pageKey: "resume" })
     .mockRejectedValueOnce(new ProviderError("RATE_LIMIT"))
+    .mockRejectedValueOnce(new ProviderError("RATE_LIMIT"))
     .mockRejectedValueOnce(new ProviderError("CURSOR"))
     .mockResolvedValue({ hashes: [txHash] });
   let now = Date.now();
@@ -132,6 +133,17 @@ it("retries the same range on rate limit or expired pagination without losing ca
   await sync(owner);
   expect(await store.watch(owner)).toMatchObject({
     nextBlock: 0n,
+    syncFailures: 2,
+    nextSyncAt: new Date(now + 240_000),
+    cursor: { pageKey: "resume" },
+  });
+  now += 65_000;
+  await sync(owner);
+  expect(discover).toHaveBeenCalledTimes(3);
+  now += 176_000;
+  await sync(owner);
+  expect(await store.watch(owner)).toMatchObject({
+    nextBlock: 0n,
     cursor: { from: "0", to: "1000", direction: "out" },
   });
   now += 16_000;
@@ -140,6 +152,7 @@ it("retries the same range on rate limit or expired pagination without losing ca
     nextBlock: 1001n,
     cursor: null,
     issue: null,
+    syncFailures: 0,
   });
   expect(
     await db.walletActivity.count({ where: walletScope(owner, wallet) }),
