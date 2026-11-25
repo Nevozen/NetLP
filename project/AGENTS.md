@@ -2,7 +2,7 @@
 
 ## Scope and instruction hierarchy
 
-LPStacks by Wardana Dev is a private liquidity-pool journal and performance analyzer. Its initial use case is WETH/cbBTC, comparing actual LP strategy wealth after costs against holding the initial assets. Read `plan.md` in full for product scope, formulas, workflows, acceptance examples, and milestones. Follow applicable global AGENTS.md for engineering and Git delivery; this file adds project-specific rules and does not override remote permissions, branch protection, or CI gates. Honor explicit task constraints. Preserve existing code and documentation.
+LPStacks by Wardana Dev is a private liquidity-pool journal and performance analyzer. Its initial use case is WETH/cbBTC, comparing actual LP strategy wealth after costs against holding the initial assets. Read `plan.md` in full for product scope, formulas, workflows, acceptance examples, and milestones. Follow applicable global AGENTS.md for engineering and Git delivery, with the LPStacks validation policy below. Remote permissions, required checks, reviews, and branch protections still apply. Honor explicit task constraints. Preserve existing code and documentation.
 
 ## Architecture and implementation
 
@@ -35,5 +35,6 @@ This is a journal, not a wallet or execution engine. Never request private keys,
 
 - Implement all acceptance examples in `plan.md` Section 11 as automated tests. Cover fee-claim/compound invariance, external versus internal gas, execution cost double-counting, exact decimals, changing prices, imports, stale snapshots, corrections, duplicate transactions, frozen closure, and ownership isolation.
 - Run actual repository formatting, lint, typecheck, unit/integration/E2E and build checks as applicable. Disclose failures, skipped checks, and API limitations. Do not claim production readiness when mandatory checks remain unverified.
+- GitHub Actions is advisory unless GitHub requires a check. When GitHub has no required CI check, passing the applicable local checks documented in `README.md` on the changes being merged is sufficient for validation. Record the local results and the actual CI status in the PR. Fix reproducible failures instead of treating an interrupted or unavailable run as a pass.
 - Use global AGENTS.md for actual atomic commits, authorized feature-branch pushes, PRs and gated merges. This project does not authorize direct stable-branch pushes, protection bypass, or deployment. If the global file is unavailable, keep work local until remote delivery rules are established.
 - Follow `plan.md` milestones, update README and changelog accurately, and report real commit hashes, PR/merge state, test outcomes, setup steps, and unresolved limitations.

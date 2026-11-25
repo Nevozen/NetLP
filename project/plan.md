@@ -604,9 +604,9 @@ MVP is done when manual journaling works end to end with real persistence; price
 
 ## 14. Repository delivery — follow AGENTS.md
 
-Use the global AGENTS.md for repository discovery, branch isolation, incremental Conventional Commits, push, PR creation, CI/review gates, and automatic merge on authorized repositories. The repository AGENTS.md adds LPStacks-specific engineering and accounting rules only. Do not install conflicting local Git rules or rewrite the global file. No remote URL, default branch, or permanent feature branch is assumed.
+Use the global AGENTS.md for repository discovery, branch isolation, incremental Conventional Commits, push, PR creation, and automatic merge on authorized repositories. Use the LPStacks validation policy in `project/AGENTS.md` and respect any checks and reviews GitHub requires. Preserve the global file. No remote URL, default branch, or permanent feature branch is assumed.
 
-Treat each coherent milestone or independently complete feature as a possible PR; commit and push smaller validated units on its task branch. Do not merge every individual commit into the stable branch. For repositories authorized for automatic delivery, merge complete PRs only after all applicable local and remote gates pass. If CI is blocked, continue safe local work and leave affected PRs unmerged; report the blocker. Respect existing protections and repository merge strategies. Never deploy, create a release, or bypass protections merely to finish this plan.
+Treat each coherent milestone or independently complete feature as a possible PR; commit and push smaller validated units on its task branch. Do not merge every individual commit into the stable branch. For authorized delivery, merge complete PRs after applicable local checks and any required GitHub gates pass. Report hosted CI status even when it is advisory and unavailable. Respect existing protections and repository merge strategies. Never deploy, create a release, or bypass protections merely to finish this plan.
 
 Use scopes such as `ledger`, `pricing`, `valuation`, `positions`, `transactions`, `fees`, `analytics`, `overview`, `database`, `auth`, `security`, `ui`, `export`, and `config` when appropriate.
 
