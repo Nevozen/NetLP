@@ -1,4 +1,10 @@
-import { decodeEventLog, decodeFunctionData, type Hex } from "viem";
+import {
+  decodeEventLog,
+  decodeFunctionData,
+  encodePacked,
+  keccak256,
+  type Hex,
+} from "viem";
 import { z } from "zod";
 import { address, knownPair, priceText, snapshotSchema } from "@/domain/model";
 import type { Prisma } from "@/generated/prisma/client";
@@ -23,6 +29,7 @@ import {
   WETH,
 } from "./pancake-contracts";
 import {
+  accruedFee,
   atBlock,
   baseAmounts,
   optionalRead,
@@ -63,7 +70,7 @@ const draftAction = z.discriminatedUnion("kind", [
     kind: z.literal("COLLECTION"),
     receipt: movementPair,
     principal: movementPair.nullable(),
-    minimumPrincipal: movementPair,
+    decreased: movementPair,
   }),
   z.object({ ...action, kind: z.enum(["APPROVAL", "GAS_ONLY"]) }),
 ]);
@@ -103,6 +110,35 @@ const flows = (
   ) as RawPair;
 const between = (ts: WalletTransfer[], lower: number, upper: number) =>
   ts.filter((t) => t.logIndex > lower && t.logIndex < upper);
+
+function receiptBlockLogs(
+  tx: VerifiedActivity,
+  logs: ChainLog[],
+  pool: string,
+) {
+  const indices = new Map(logs.map((log) => [log.logIndex, log]));
+  return (
+    indices.size === logs.length &&
+    logs.every(
+      (log) =>
+        (log.address === pool || log.address === MANAGER) &&
+        log.blockHash === tx.block.hash &&
+        !log.removed,
+    ) &&
+    tx.receipt.logs
+      .filter((log) => log.address === pool || log.address === MANAGER)
+      .every((log) => {
+        const entry = indices.get(log.logIndex);
+        return (
+          entry?.transactionHash === tx.tx.hash &&
+          entry.transactionIndex === tx.receipt.transactionIndex &&
+          entry.address === log.address &&
+          entry.data === log.data &&
+          entry.topics.join() === log.topics.join()
+        );
+      })
+  );
+}
 
 function managerEvents(logs: ChainLog[]) {
   return logs.flatMap((log) => {
@@ -252,10 +288,20 @@ async function liquidity(
     (t) => t.contract === MANAGER && t.standard === "ERC-721",
   );
   const ids = [...new Set(events.map((e) => e.args.tokenId))];
-  if (!ids.length)
+  if (!ids.length) {
+    const ownership = nft.filter((t) => involves(t, tx.wallet));
+    if (ownership.some((t) => t.to === ZERO))
+      return warning(
+        "Position NFT burned. No liquidity payment is established by the burn itself.",
+      );
+    if (ownership.length)
+      return warning(
+        "Position NFT transfer. Do not treat a change of ownership as earned fees or a deposit.",
+      );
     return warning(
       "This position-manager call has no supported deposited or collected amounts.",
     );
+  }
   if (
     ids.length > 4 ||
     events.length > 8 ||
@@ -325,17 +371,7 @@ async function liquidity(
       rpc.blockLogs(tx.block.hash, [pool, MANAGER]),
     );
     const validLogs =
-      blockLogs &&
-      blockLogs.every(
-        (log) => log.blockHash === tx.block.hash && !log.removed,
-      ) &&
-      blockLogs.some(
-        (log) =>
-          log.transactionHash === tx.tx.hash &&
-          log.logIndex === relevant.at(-1)!.index,
-      )
-        ? blockLogs
-        : null;
+      blockLogs && receiptBlockLogs(tx, blockLogs, pool) ? blockLogs : null;
     const earlier = validLogs?.some(
       (log) =>
         log.transactionIndex < tx.receipt.transactionIndex &&
@@ -346,8 +382,10 @@ async function liquidity(
         log.transactionIndex > tx.receipt.transactionIndex &&
         (log.address === pool || logTouchesPosition(log, id)),
     );
-    if (burn && (!validLogs || earlier))
-      return warning("Ownership before the NFT burn could not be verified.");
+    if (!mint && (!validLogs || (burn && earlier)))
+      return warning(
+        "Ownership during this transaction could not be verified from the block logs.",
+      );
     if (
       !mint &&
       later &&
@@ -378,8 +416,8 @@ async function liquidity(
       fee: position.fee,
       ...priceBounds(position),
     };
-    const lastInPool = !poolLogs.some(
-      (log) => log.address === pool && log.index > anchor,
+    const lastInPool = !tx.receipt.logs.some(
+      (log) => log.address === pool && log.logIndex > anchor,
     );
     let noPrincipal = noPriorPrincipal;
     let draft: PancakeAction;
@@ -391,6 +429,7 @@ async function liquidity(
           e.address === pool &&
           e.index > start &&
           e.index < anchor &&
+          e.args.sender.toLowerCase() === MANAGER &&
           e.args.owner.toLowerCase() === MANAGER &&
           e.args.tickLower === position.lower &&
           e.args.tickUpper === position.upper,
@@ -416,6 +455,18 @@ async function liquidity(
       };
     } else {
       const e = collect!;
+      if (
+        burn &&
+        !nft.some(
+          (t) =>
+            t.tokenId === id.toString() &&
+            t.to === ZERO &&
+            t.logIndex > e.index,
+        )
+      )
+        return warning(
+          "The collection could not be ordered before the NFT burn.",
+        );
       const actual = flows(ownTransfers, pool, tx.wallet, tokens);
       const principal: RawPair = decrease
         ? [decrease.args.amount0, decrease.args.amount1]
@@ -442,25 +493,90 @@ async function liquidity(
         return warning(
           "The collection did not reconcile to transfers from the verified pool to this wallet.",
         );
-      if (actual[0] < principal[0] || actual[1] < principal[1])
-        return warning(
-          "The wallet did not receive enough tokens to settle this transaction's withdrawn principal.",
+      let splitKnown = !decrease && noPriorPrincipal.every(Boolean);
+      if (decrease) {
+        const burnLog = poolLogs.find(
+          (log) =>
+            log.eventName === "Burn" &&
+            log.address === pool &&
+            log.index < decrease.index &&
+            log.args.owner.toLowerCase() === MANAGER &&
+            log.args.amount === decrease.args.liquidity &&
+            log.args.tickLower === position.lower &&
+            log.args.tickUpper === position.upper &&
+            equal([log.args.amount0, log.args.amount1], principal),
         );
-      const splitKnown =
-        noPriorPrincipal.every(Boolean) &&
-        (!some(principal) ||
-          (equal(actual, [e.args.amount0, e.args.amount1]) &&
-            (burn ||
-              !!(validLogs && !later && lastInPool && !some(position.owed)))));
-      noPrincipal = some(principal)
-        ? [splitKnown, splitKnown]
-        : noPriorPrincipal;
+        if (!burnLog)
+          return warning(
+            "The decrease did not match a withdrawal from the verified pool position.",
+          );
+        const collectionBurn = poolLogs.find(
+          (log) =>
+            log.eventName === "Burn" &&
+            log.address === pool &&
+            log.index > decrease.index &&
+            log.index < core[0].index &&
+            log.args.amount === 0n &&
+            log.args.owner.toLowerCase() === MANAGER &&
+            log.args.tickLower === position.lower &&
+            log.args.tickUpper === position.upper,
+        );
+        const unchanged = !tx.receipt.logs.some(
+          (log) =>
+            log.address === pool &&
+            log.logIndex > burnLog.index &&
+            log.logIndex < core[0].index &&
+            log.logIndex !== collectionBurn?.index,
+        );
+        if (
+          prior &&
+          noPriorPrincipal.every(Boolean) &&
+          validLogs &&
+          !later &&
+          lastInPool &&
+          unchanged &&
+          prior.liquidity >= decrease.args.liquidity &&
+          equal(actual, [e.args.amount0, e.args.amount1])
+        ) {
+          const remaining = prior.liquidity - decrease.args.liquidity;
+          let growth: RawPair | null = null;
+          if (burn && remaining === 0n) {
+            const key = keccak256(
+              encodePacked(
+                ["address", "int24", "int24"],
+                [MANAGER, position.lower, position.upper],
+              ),
+            );
+            const coreState = await optionalRead(() =>
+              read(pool, poolAbi, "positions", key),
+            );
+            if (coreState) growth = [coreState[1], coreState[2]];
+          } else if (
+            !burn &&
+            position.liquidity === remaining &&
+            !some(position.owed)
+          ) {
+            growth = position.growth;
+          }
+          // Manager updates fee growth on decrease; the same growth applies at collect
+          // only if nothing changes in the pool between the decrease and the collect.
+          splitKnown =
+            growth !== null &&
+            ([0, 1] as const).every(
+              (i) =>
+                principal[i] +
+                  accruedFee(growth[i], prior.growth[i], prior.liquidity) ===
+                actual[i],
+            );
+        }
+        noPrincipal = [splitKnown, splitKnown];
+      }
       draft = {
         ...common,
         kind: "COLLECTION",
         receipt: baseAmounts(actual, ordered),
         principal: splitKnown ? baseAmounts(principal, ordered) : null,
-        minimumPrincipal: baseAmounts(principal, ordered),
+        decreased: baseAmounts(principal, ordered),
       };
     }
     for (const t of ownTransfers) accounted.add(t.logIndex);

@@ -187,6 +187,70 @@ it("orders same-block transactions by coordinates and keeps one fee per receipt"
   expect(cycle.evaluation.networkHistorical).toBe("0.4");
 });
 
+it("shares one gas charge and one quote set across actions, then freezes explicit closure", async () => {
+  const { owner, id, watch } = await setup();
+  const seeded = await seed(owner, 2, 1, ["0.4", "0"], ["0", "0.0099"]);
+  const row = await db.walletActivity.update({
+    where: { id: seeded.id },
+    data: {
+      draft: {
+        version: 1,
+        actions: [
+          {
+            index: 5,
+            kind: "SWAP",
+            pool,
+            paid: ["0.4", "0"],
+            received: ["0", "0.0099"],
+          },
+          {
+            index: 8,
+            kind: "SWAP",
+            pool,
+            paid: ["0", "0.0099"],
+            received: ["0.39", "0"],
+          },
+        ],
+      },
+    },
+  });
+  const cycle = await journal.get(owner, id);
+  const groups = walletGroupsFrom(
+    cycle,
+    watch,
+    [row],
+    { ...reviewFields, r0a1purpose: "EXIT" },
+    [prices(2)],
+  );
+  const preview = await journal.previewWallet(
+    owner,
+    id,
+    watch,
+    groups,
+    cycle.journalVersion,
+  );
+  await journal.postWallet(owner, preview.id, finalCheck);
+  const open = await journal.get(owner, id);
+  expect(open.closedAt).toBeNull();
+  expect(open.events.slice(1).map(({ entry }) => entry.facts.gas)).toEqual([
+    "RECORDED",
+    "SHARED",
+  ]);
+  expect(open.events[1].priceSetId).toBe(open.events[2].priceSetId);
+  expect(open.evaluation).toMatchObject({
+    netWealth: "974.8",
+    networkHistorical: "0.2",
+  });
+  await journal.post(owner, id, randomUUID(), {
+    at: at(2),
+    facts: { kind: "CLOSE_STRATEGY", gas: "NONE", costs: [] },
+    prices: prices(2),
+  });
+  const closed = await journal.get(owner, id);
+  expect(closed.mark.type).toBe("FROZEN");
+  expect(closed.evaluation.netWealth).toBe(open.evaluation.netWealth);
+});
+
 it("invalidates reorged evidence and rejects stale reviews with no partial write", async () => {
   const { owner, id, watch } = await setup();
   const first = await seed(owner, 2, 1, ["0.4", "0"], ["0", "0.0099"]);

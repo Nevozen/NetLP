@@ -50,6 +50,10 @@ export interface EventResult {
 export function compareEntries(a: Entry, b: Entry) {
   const time = a.at.localeCompare(b.at);
   if (time) return time;
+  const closure =
+    Number(a.facts.kind === "CLOSE_STRATEGY") -
+    Number(b.facts.kind === "CLOSE_STRATEGY");
+  if (closure) return closure;
   if (a.walletOrigin && b.walletOrigin) {
     const left = BigInt(a.walletOrigin.blockNumber);
     const right = BigInt(b.walletOrigin.blockNumber);

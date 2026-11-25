@@ -1,6 +1,7 @@
 import { parseAbi } from "viem";
 import { presets } from "@/domain/catalog";
 
+// Base deployments in the official PancakeSwap v3 and Universal Router address tables.
 export const MANAGER = "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364";
 export const FACTORY = "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865";
 export const ROUTERS = new Set([
@@ -27,6 +28,7 @@ export const poolAbi = parseAbi([
   "function fee() view returns (uint24)",
   "function slot0() view returns (uint160, int24, uint16, uint16, uint16, uint32, bool)",
   "function ticks(int24) view returns (uint128, int128, uint256, uint256, int56, uint160, uint32, bool)",
+  "function positions(bytes32) view returns (uint128, uint256, uint256, uint128, uint128)",
   "function feeGrowthGlobal0X128() view returns (uint256)",
   "function feeGrowthGlobal1X128() view returns (uint256)",
   "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint128 protocolFeesToken0, uint128 protocolFeesToken1)",

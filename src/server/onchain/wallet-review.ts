@@ -10,6 +10,7 @@ import { presets } from "@/domain/catalog";
 import {
   eventSchema,
   knownPair,
+  priceText,
   quantity,
   snapshotSchema,
   type EventFacts,
@@ -166,6 +167,13 @@ export function walletGroupsFrom(
   const reversePair = cycle.market.pair[0].id !== presets.base.pair[0].id;
   const order = <T>(pair: [T, T]): [T, T] =>
     reversePair ? [pair[1], pair[0]] : pair;
+  const orientRatio = (ratio?: string) => {
+    if (!reversePair || !ratio) return ratio;
+    const flipped = new D(1).div(ratio).toDecimalPlaces(36);
+    return flipped.gt(0)
+      ? priceText.safeParse(flipped.toFixed()).data
+      : undefined;
+  };
   return rows.map((row, rowIndex) => {
     const draft = pancakeDraftSchema.parse(row.draft);
     const evidence = evidenceSchema.parse(row.evidence);
@@ -238,7 +246,10 @@ export function walletGroupsFrom(
       let newLeg: Leg | undefined;
       if (op.kind === "ADD" && op.mint) {
         requireFact(!leg, "This position NFT is already linked to a leg.");
-        const range = reversePair ? {} : { lower: op.lower, upper: op.upper };
+        const lower = orientRatio(reversePair ? op.upper : op.lower);
+        const upper = orientRatio(reversePair ? op.lower : op.upper);
+        const range =
+          lower && upper && new D(lower).lt(upper) ? { lower, upper } : {};
         newLeg = leg = {
           id: `pcv3:${op.tokenId}`,
           ...range,
@@ -261,7 +272,7 @@ export function walletGroupsFrom(
         ...observed,
         principal: order(observed.principal),
         unclaimed: order(observed.unclaimed),
-        ratio: reversePair ? undefined : observed.ratio,
+        ratio: orientRatio(observed.ratio),
       };
       const lp = { ...base, snapshot, legId: leg.id };
       if (op.kind === "ADD")
@@ -287,8 +298,8 @@ export function walletGroupsFrom(
       const fees = principal.map((n, i) => {
         const amount = new D(n);
         requireFact(
-          amount.gte(op.minimumPrincipal[i]) && amount.lte(op.receipt[i]),
-          "Principal must cover the proven decrease and cannot exceed what reached the wallet.",
+          amount.lte(op.receipt[i]),
+          "Principal paid cannot exceed what reached the wallet.",
         );
         return new D(op.receipt[i]).minus(amount).toFixed();
       }) as [string, string];

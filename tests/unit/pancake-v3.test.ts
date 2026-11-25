@@ -116,14 +116,22 @@ const deposit = (index: number, a: bigint, b: bigint) => [
     encode(parseAbiParameters("uint128,uint256,uint256"), [W, a, b]),
   ),
 ];
-const decrease = (index: number) =>
+const decrease = (index: number) => [
+  log(
+    pool,
+    index,
+    "Burn(address,int24,int24,uint128,uint256,uint256)",
+    [word(MANAGER), int(-100), int(100)],
+    encode(parseAbiParameters("uint128,uint256,uint256"), [W, W / 2n, B / 10n]),
+  ),
   log(
     MANAGER,
-    index,
+    index + 1,
     "DecreaseLiquidity(uint256,uint128,uint256,uint256)",
     [word(1n)],
     encode(parseAbiParameters("uint128,uint256,uint256"), [W, W / 2n, B / 10n]),
-  );
+  ),
+];
 const collect = (index: number, a: bigint, b: bigint, reported = a) => [
   erc(WETH, index, pool, wallet, a),
   erc(CBBTC, index + 1, pool, wallet, b),
@@ -199,6 +207,8 @@ function provider(
     extraLogs?: ChainLog[];
     archive?: boolean;
     fakePool?: boolean;
+    priorLiquidity?: bigint;
+    feeGrowth?: [bigint, bigint];
   } = {},
 ): BaseReader {
   return {
@@ -206,7 +216,10 @@ function provider(
     transaction: async () => tx.tx,
     receipt: async () => tx.receipt,
     block: async () => tx.block,
-    blockLogs: async () => [...tx.receipt.logs, ...(options.extraLogs ?? [])],
+    blockLogs: async (_hash, addresses) =>
+      [...tx.receipt.logs, ...(options.extraLogs ?? [])].filter((log) =>
+        addresses.includes(log.address),
+      ),
     call: vi.fn(async (to, data, block) => {
       if (options.archive === false) throw new ProviderError("CALL");
       if (to === MANAGER) {
@@ -229,9 +242,9 @@ function provider(
             500,
             -100,
             100,
-            W,
-            0n,
-            0n,
+            block === 120n ? (options.priorLiquidity ?? W) : W,
+            block === 121n ? (options.feeGrowth?.[0] ?? 0n) : 0n,
+            block === 121n ? (options.feeGrowth?.[1] ?? 0n) : 0n,
             block === 120n ? (options.priorOwed ?? 0n) : 0n,
             0n,
           ],
@@ -275,12 +288,32 @@ function provider(
             functionName,
             result: [W, 0n, 0n, 0n, 0n, 0n, 0, true],
           });
-        default:
+        case "feeGrowthGlobal0X128":
           return encodeFunctionResult({
             abi: poolAbi,
             functionName,
-            result: 0n,
+            result: options.feeGrowth?.[0] ?? 0n,
           });
+        case "feeGrowthGlobal1X128":
+          return encodeFunctionResult({
+            abi: poolAbi,
+            functionName,
+            result: options.feeGrowth?.[1] ?? 0n,
+          });
+        case "positions":
+          return encodeFunctionResult({
+            abi: poolAbi,
+            functionName,
+            result: [
+              0n,
+              options.feeGrowth?.[0] ?? 0n,
+              options.feeGrowth?.[1] ?? 0n,
+              0n,
+              0n,
+            ],
+          });
+        default:
+          throw new Error("Unexpected fixture pool call.");
       }
     }),
   };
@@ -373,24 +406,66 @@ describe("Pancake v3 receipt evidence", () => {
         ],
       },
     });
-    const partial = fixture(MANAGER, [decrease(1), ...collect(2, W, B / 2n)]);
-    expect(await classifyPancake(provider(partial), partial)).toMatchObject({
+    const partial = fixture(MANAGER, [
+      ...decrease(1),
+      ...collect(3, W, B / 10n),
+    ]);
+    const historical = {
+      priorLiquidity: 2n * W,
+      feeGrowth: [Q / 4n, 0n] as [bigint, bigint],
+    };
+    expect(
+      await classifyPancake(provider(partial, historical), partial),
+    ).toMatchObject({
       draft: {
-        actions: [{ principal: ["0.5", "0.1"], receipt: ["1", "0.5"] }],
+        actions: [{ principal: ["0.5", "0.1"], receipt: ["1", "0.1"] }],
       },
     });
     expect(
-      await classifyPancake(provider(partial, { priorOwed: 2n }), partial),
+      await classifyPancake(
+        provider(partial, { ...historical, priorOwed: 2n }),
+        partial,
+      ),
     ).toMatchObject({
       status: "NEEDS_REVIEW",
       draft: {
-        actions: [{ principal: null, minimumPrincipal: ["0.5", "0.1"] }],
+        actions: [{ principal: null, decreased: ["0.5", "0.1"] }],
+      },
+    });
+    expect(
+      await classifyPancake(
+        provider(partial, { priorLiquidity: 2n * W }),
+        partial,
+      ),
+    ).toMatchObject({
+      status: "NEEDS_REVIEW",
+      draft: { actions: [{ principal: null }] },
+    });
+    const full = fixture(MANAGER, [
+      ...decrease(1),
+      ...collect(3, W, B / 10n),
+      nft(7, wallet, ZERO),
+    ]);
+    expect(
+      await classifyPancake(
+        provider(full, { burned: true, feeGrowth: [Q / 2n, 0n] }),
+        full,
+      ),
+    ).toMatchObject({
+      status: "READY",
+      draft: {
+        actions: [
+          {
+            principal: ["0.5", "0.1"],
+            snapshot: { principal: ["0", "0"], unclaimed: ["0", "0"] },
+          },
+        ],
       },
     });
     const rounded = fixture(MANAGER, [
-      decrease(1),
-      ...collect(2, W - 1n, B / 2n, W),
-      nft(6, wallet, ZERO),
+      ...decrease(1),
+      ...collect(3, W - 1n, B / 2n, W),
+      nft(7, wallet, ZERO),
     ]);
     expect(
       await classifyPancake(provider(rounded, { burned: true }), rounded),
@@ -405,7 +480,7 @@ describe("Pancake v3 receipt evidence", () => {
         ],
       },
     });
-    const decreaseOnly = fixture(MANAGER, [decrease(1)]);
+    const decreaseOnly = fixture(MANAGER, decrease(1));
     expect(
       await classifyPancake(provider(decreaseOnly), decreaseOnly),
     ).toMatchObject({

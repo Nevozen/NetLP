@@ -99,7 +99,10 @@ export async function optionalRead<T>(fn: () => Promise<T>) {
   try {
     return await fn();
   } catch (error) {
-    if (!(error instanceof ProviderError) || error.kind === "RATE_LIMIT")
+    if (
+      !(error instanceof ProviderError) ||
+      !["CALL", "INVALID"].includes(error.kind)
+    )
       throw error;
     return null;
   }
@@ -213,7 +216,11 @@ export function unrealizedFee(
   const wrap = (n: bigint) => BigInt.asUintN(256, n);
   const below = tick >= lower ? lowerOutside : wrap(global - lowerOutside);
   const above = tick < upper ? upperOutside : wrap(global - upperOutside);
-  return (wrap(global - below - above - last) * liquidity) >> 128n;
+  return accruedFee(wrap(global - below - above), last, liquidity);
+}
+
+export function accruedFee(growth: bigint, last: bigint, liquidity: bigint) {
+  return (BigInt.asUintN(256, growth - last) * liquidity) >> 128n;
 }
 
 function priceRatio(sqrt: bigint, ordered: boolean) {

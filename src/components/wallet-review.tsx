@@ -86,8 +86,9 @@ function Resolution({ op, prefix }: { op: PancakeAction; prefix: string }) {
             <>
               <p role="note">
                 The receipt does not prove the principal/fee split. Enter the
-                principal paid out; the remainder is the fee. Proven decrease in
-                this receipt: {pair(op.minimumPrincipal)}.
+                principal paid out; the remainder is the fee. Decrease recorded
+                on-chain: {pair(op.decreased)}. A decrease is not proof of
+                payment.
               </p>
               <div className="field-grid">
                 {presets.base.pair.map((token, i) => (
