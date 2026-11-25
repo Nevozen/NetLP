@@ -1,0 +1,1 @@
+ALTER TABLE "WalletWatch" ADD COLUMN "syncFailures" INTEGER NOT NULL DEFAULT 0;

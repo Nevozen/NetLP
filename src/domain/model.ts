@@ -226,12 +226,26 @@ export type Quote = z.infer<typeof quoteSchema>;
 export type PriceVector = Quote[];
 export type Amounts<T = string> = Record<string, T>;
 
+export const walletOriginSchema = z.object({
+  activityId: z.uuid(),
+  blockNumber: z.string().regex(/^\d{1,24}$/),
+  blockHash: hash,
+  txIndex: z.number().int().nonnegative(),
+  sources: z
+    .array(z.enum(["ALCHEMY", "CSV", "HASH"]))
+    .min(1)
+    .max(3),
+  decoderVersion: z.number().int().positive(),
+});
+export type WalletOrigin = z.infer<typeof walletOriginSchema>;
+
 export interface Entry {
   id: string;
   at: string;
   sequence: number;
   facts: EventFacts;
   prices: PriceVector;
+  walletOrigin?: WalletOrigin;
 }
 
 export function tokens(market: Market): Token[] {

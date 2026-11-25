@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
-import { replay } from "@/domain/ledger";
+import { compareEntries, replay } from "@/domain/ledger";
 import {
   address,
   eventSchema,
@@ -13,6 +13,7 @@ import {
   timestamp,
   vectorSchema,
   type PriceVector,
+  walletOriginSchema,
 } from "@/domain/model";
 import { evaluate, type Evaluation } from "@/domain/performance";
 import { AccountingError, requireFact, validateVector } from "@/domain/values";
@@ -32,6 +33,21 @@ const submission = z.object({
   prices: vectorSchema,
 });
 type Posting = z.infer<typeof submission>;
+const walletGroup = z.object({
+  origin: walletOriginSchema,
+  at: timestamp,
+  revision: z.number().int().positive(),
+  facts: z.array(eventSchema).min(1).max(12),
+  prices: vectorSchema,
+});
+const walletGroups = z.array(walletGroup).min(1).max(10);
+export type WalletGroup = z.infer<typeof walletGroup>;
+const walletReview = z.object({
+  groups: walletGroups,
+  address,
+  generation: z.number().int().positive(),
+  journalVersion: z.string().length(64),
+});
 type Correction = { eventId: string; version: number; reason: string };
 type Client = Prisma.TransactionClient;
 const revisionInclude = {
@@ -103,24 +119,29 @@ function postedDigest(posting: Posting) {
 }
 
 function decodeEvents(row: Row) {
-  return row.events.map((event) => {
-    const revision = event.revisions[0];
-    if (!revision || revision.format !== 1)
-      throw new Error("Unsupported journal input format.");
-    const entry: Entry = {
-      id: event.id,
-      sequence: event.sequence,
-      at: revision.occurredAt.toISOString(),
-      facts: eventSchema.parse(revision.facts),
-      prices: vectorSchema.parse(revision.prices.quotes),
-    };
-    return {
-      entry,
-      version: revision.version,
-      revisionId: revision.id,
-      priceSetId: revision.priceSetId,
-    };
-  });
+  return row.events
+    .map((event) => {
+      const revision = event.revisions[0];
+      if (!revision || revision.format !== 1)
+        throw new Error("Unsupported journal input format.");
+      const entry: Entry = {
+        id: event.id,
+        sequence: event.sequence,
+        at: revision.occurredAt.toISOString(),
+        facts: eventSchema.parse(revision.facts),
+        prices: vectorSchema.parse(revision.prices.quotes),
+        walletOrigin: event.walletOrigin
+          ? walletOriginSchema.parse(event.walletOrigin)
+          : undefined,
+      };
+      return {
+        entry,
+        version: revision.version,
+        revisionId: revision.id,
+        priceSetId: revision.priceSetId,
+      };
+    })
+    .sort((a, b) => compareEntries(a.entry, b.entry));
 }
 
 function strategyView(row: Row, now = new Date().toISOString()) {
@@ -172,6 +193,7 @@ function strategyView(row: Row, now = new Date().toISOString()) {
     mark,
     evaluation,
     ledger,
+    journalVersion: walletJournalVersion(row),
   };
 }
 
@@ -193,6 +215,28 @@ async function lockStrategy(tx: Client, ownerId: string, id: string) {
     { id: string }[]
   >`SELECT id FROM "Strategy" WHERE id = ${id}::uuid AND "ownerId" = ${ownerId} FOR UPDATE`;
   if (!rows.length) throw new MissingRecord();
+}
+
+async function lockOwner(tx: Client, ownerId: string) {
+  await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${ownerId} FOR UPDATE`;
+}
+
+function checkWalletTime(entries: Entry[], next: Entry) {
+  if (
+    next.facts.kind === "OPENING_ALLOCATION" ||
+    next.facts.kind === "CLOSE_STRATEGY"
+  )
+    return;
+  requireFact(
+    !entries.some(
+      (e) =>
+        e.id !== next.id &&
+        e.at === next.at &&
+        e.facts.kind !== "OPENING_ALLOCATION" &&
+        Boolean(e.walletOrigin) !== Boolean(next.walletOrigin),
+    ),
+    "An imported and a manual event have the same timestamp. Resolve their order in the journal before posting.",
+  );
 }
 
 function indexFields(entry: Entry) {
@@ -225,6 +269,14 @@ function candidate(
       prior.entry.facts.kind === posting.facts.kind,
       "A correction must keep the original event type.",
     );
+    if (prior.entry.walletOrigin) {
+      requireFact(
+        prior.entry.at === posting.at &&
+          prior.entry.facts.txHash === posting.facts.txHash &&
+          prior.entry.facts.actionIndex === posting.facts.actionIndex,
+        "A correction to an on-chain event must keep its original timestamp, hash and action index.",
+      );
+    }
   } else {
     requireFact(
       posting.facts.kind !== "OPENING_ALLOCATION",
@@ -244,11 +296,16 @@ function candidate(
   const newEntry: Entry = {
     ...posting,
     id: prior ? prior.entry.id : id,
+    walletOrigin: prior?.entry.walletOrigin,
     sequence: prior
       ? prior.entry.sequence
       : events.reduce((max, event) => Math.max(max, event.entry.sequence), 0) +
         1,
   };
+  checkWalletTime(
+    events.map(({ entry }) => entry),
+    newEntry,
+  );
   const ledger = replay(market, [
     ...events
       .filter((event) => event.entry.id !== newEntry.id)
@@ -270,6 +327,124 @@ function candidate(
     prior,
     line: ledger.results.find((line) => line.entry.id === newEntry.id)!,
   };
+}
+
+function walletJournalVersion(row: Row) {
+  return digest({
+    revisions: row.events.map((event) => event.revisions[0]?.id),
+    wallet: row.walletAddress,
+    position: row.positionRef,
+    protocol: row.protocol,
+    mark: row.quotes[0]?.id,
+    closed: Boolean(row.closedAt),
+  });
+}
+
+async function walletEntries(
+  tx: Client,
+  row: Row,
+  watch: { address: string; generation: number },
+  groups: WalletGroup[],
+) {
+  requireFact(
+    !row.closedAt && row.chainId === "8453",
+    "Choose an open Base strategy for this batch.",
+  );
+  requireFact(
+    !row.walletAddress || row.walletAddress === watch.address,
+    "The strategy is linked to a different wallet.",
+  );
+  const current = await tx.walletWatch.findFirst({
+    where: {
+      ownerId: row.ownerId,
+      chainId: row.chainId,
+      address: watch.address,
+      generation: watch.generation,
+    },
+  });
+  requireFact(
+    current,
+    "The watched wallet changed. Select the transactions again.",
+  );
+  const ids = groups.map((group) => group.origin.activityId);
+  requireFact(
+    new Set(ids).size === ids.length,
+    "Select each transaction only once.",
+  );
+  const activity = await tx.walletActivity.findMany({
+    where: {
+      ownerId: row.ownerId,
+      chainId: row.chainId,
+      address: watch.address,
+      id: { in: ids },
+      ignored: false,
+      status: { in: ["READY", "NEEDS_REVIEW"] },
+    },
+  });
+  const byId = new Map(activity.map((a) => [a.id, a]));
+  const hashes = groups.map(({ origin, revision, facts, at }) => {
+    const a = byId.get(origin.activityId);
+    requireFact(
+      a &&
+        a.revision === revision &&
+        a.blockNumber?.toString() === origin.blockNumber &&
+        a.blockHash === origin.blockHash &&
+        a.txIndex === origin.txIndex &&
+        a.occurredAt?.toISOString() === at,
+      "Wallet evidence changed or a transaction was already posted. Refresh the review.",
+    );
+    requireFact(
+      facts.every(
+        (fact) =>
+          fact.txHash === a.txHash &&
+          !["OPENING_ALLOCATION", "CLOSE_STRATEGY"].includes(fact.kind),
+      ),
+      "The batch must contain actions for its verified transactions only.",
+    );
+    requireFact(
+      facts[0].gas === "RECORDED"
+        ? facts.slice(1).every((fact) => fact.gas === "SHARED")
+        : facts.every((fact) => fact.gas === "UNKNOWN"),
+      "Record the receipt fee once, or leave the entire receipt fee unresolved.",
+    );
+    return a.txHash;
+  });
+  requireFact(
+    !(await tx.journalEvent.findFirst({
+      where: {
+        ownerId: row.ownerId,
+        chainId: row.chainId,
+        txHash: { in: hashes },
+      },
+      select: { id: true },
+    })),
+    "An on-chain transaction is already in your journal. Review the existing entry instead.",
+  );
+  const existing = decodeEvents(row).map(({ entry }) => entry);
+  let sequence = existing.reduce(
+    (max, entry) => Math.max(max, entry.sequence),
+    0,
+  );
+  const entries = groups.flatMap((group) =>
+    group.facts.map((facts): Entry => ({
+      id: randomUUID(),
+      sequence: ++sequence,
+      at: group.at,
+      facts,
+      prices: group.prices,
+      walletOrigin: group.origin,
+    })),
+  );
+  requireFact(
+    existing.length + entries.length <= 5000,
+    "This batch exceeds the strategy journal limit.",
+  );
+  for (const entry of entries) checkWalletTime(existing, entry);
+  const ledger = replay(marketSchema.parse(row.market), [
+    ...existing,
+    ...entries,
+  ]);
+  return { entries, ledger };
 }
 
 async function persistence<T>(fn: () => Promise<T>): Promise<T> {
@@ -429,6 +604,193 @@ export function createJournal(db: PrismaClient) {
         replaces,
       );
     },
+    async previewWallet(
+      ownerId: string,
+      strategyId: string,
+      watch: { address: string; generation: number },
+      input: WalletGroup[],
+      journalVersion: string,
+    ) {
+      const groups = walletGroups.parse(input);
+      return db.$transaction(
+        async (tx) => {
+          await lockOwner(tx, ownerId);
+          await lockStrategy(tx, ownerId, strategyId);
+          await tx.$queryRaw`SELECT 1 FROM "WalletWatch" WHERE "ownerId" = ${ownerId} AND "chainId" = '8453' FOR UPDATE`;
+          const row = await getRow(tx, ownerId, strategyId);
+          requireFact(
+            walletJournalVersion(row) === journalVersion,
+            "The strategy changed while pricing this batch. Preview it again.",
+          );
+          const { ledger } = await walletEntries(tx, row, watch, groups);
+          const now = new Date();
+          await tx.walletImportReview.deleteMany({
+            where: { ownerId, expiresAt: { lt: now } },
+          });
+          requireFact(
+            (await tx.walletImportReview.count({
+              where: { ownerId, postedAt: null },
+            })) < 30,
+            "Too many recent previews. Open an existing preview or wait for it to expire.",
+          );
+          const { id } = await tx.walletImportReview.create({
+            data: {
+              ownerId,
+              chainId: row.chainId,
+              strategyId,
+              expiresAt: new Date(+now + 20 * 60_000),
+              data: inputJson({
+                groups,
+                address: watch.address,
+                generation: watch.generation,
+                journalVersion,
+              }),
+            },
+          });
+          const latest = ledger.results.at(-1)!.entry;
+          const saved = row.quotes[0];
+          const mark =
+            saved && saved.at.toISOString() >= latest.at
+              ? {
+                  at: saved.at.toISOString(),
+                  prices: vectorSchema.parse(saved.quotes),
+                }
+              : latest;
+          return {
+            id,
+            ledger,
+            evaluation: evaluate(
+              marketSchema.parse(row.market),
+              ledger,
+              mark.at,
+              mark.prices,
+              now.toISOString(),
+            ),
+          };
+        },
+        { timeout: 10_000 },
+      );
+    },
+    async postWallet(
+      ownerId: string,
+      reviewId: string,
+      checkFinal: (
+        group: WalletGroup,
+        context: { ownerId: string; address: string },
+      ) => Promise<void>,
+    ) {
+      if (!uuid.safeParse(reviewId).success) throw new MissingRecord();
+      const review = await db.walletImportReview.findFirst({
+        where: { id: reviewId, ownerId },
+      });
+      if (!review) throw new MissingRecord();
+      if (review.postedAt) return review.strategyId;
+      requireFact(
+        review.expiresAt.getTime() > Date.now(),
+        "This review expired. Preview the batch again.",
+      );
+      const details = walletReview.parse(review.data);
+      for (const group of details.groups)
+        await checkFinal(group, { ownerId, address: details.address });
+      return persistence(() =>
+        db.$transaction(
+          async (tx) => {
+            await lockOwner(tx, ownerId);
+            await lockStrategy(tx, ownerId, review.strategyId);
+            const current = await tx.walletImportReview.findUnique({
+              where: { id: review.id },
+            });
+            requireFact(
+              current,
+              "This review expired. Preview the batch again.",
+            );
+            if (current.postedAt) return review.strategyId;
+            requireFact(
+              current.expiresAt.getTime() > Date.now(),
+              "This review expired. Preview the batch again.",
+            );
+            await tx.$queryRaw`SELECT 1 FROM "WalletWatch" WHERE "ownerId" = ${ownerId} AND "chainId" = ${review.chainId} FOR UPDATE`;
+            const row = await getRow(tx, ownerId, review.strategyId);
+            requireFact(
+              walletJournalVersion(row) === details.journalVersion,
+              "The strategy changed. Preview the batch again.",
+            );
+            const { entries } = await walletEntries(
+              tx,
+              row,
+              details,
+              details.groups,
+            );
+            const byActivity = new Map<string, Entry[]>();
+            for (const entry of entries) {
+              const key = entry.walletOrigin!.activityId;
+              const items = byActivity.get(key);
+              if (items) items.push(entry);
+              else byActivity.set(key, [entry]);
+            }
+            for (const group of details.groups) {
+              const items = byActivity.get(group.origin.activityId)!;
+              const { id: priceSetId } = await tx.priceSet.create({
+                data: {
+                  strategyId: row.id,
+                  at: new Date(group.at),
+                  purpose: "EVENT",
+                  quotes: inputJson(group.prices),
+                },
+              });
+              await tx.journalEvent.createMany({
+                data: items.map((entry) => ({
+                  id: entry.id,
+                  strategyId: row.id,
+                  ownerId,
+                  chainId: row.chainId,
+                  sequence: entry.sequence,
+                  walletOrigin: inputJson(group.origin),
+                  ...indexFields(entry),
+                })),
+              });
+              await tx.eventRevision.createMany({
+                data: items.map((entry) => ({
+                  id: entry.id,
+                  strategyId: row.id,
+                  eventId: entry.id,
+                  version: 1,
+                  digest: digest(postedDigest(entry)),
+                  facts: inputJson(entry.facts),
+                  occurredAt: new Date(entry.at),
+                  priceSetId,
+                  actorId: ownerId,
+                })),
+              });
+              const touched = await tx.walletActivity.updateMany({
+                where: {
+                  id: group.origin.activityId,
+                  ownerId,
+                  revision: group.revision,
+                  ignored: false,
+                },
+                data: {
+                  status: "POSTED",
+                  postedStrategyId: row.id,
+                  postedEventIds: items.map((entry) => entry.id),
+                  revision: { increment: 1 },
+                },
+              });
+              requireFact(
+                touched.count === 1,
+                "Wallet evidence changed. Preview the batch again.",
+              );
+            }
+            await tx.walletImportReview.update({
+              where: { id: review.id },
+              data: { postedAt: new Date(), data: Prisma.DbNull },
+            });
+            return row.id;
+          },
+          { timeout: 15_000 },
+        ),
+      );
+    },
     async post(
       ownerId: string,
       strategyId: string,
@@ -446,6 +808,7 @@ export function createJournal(db: PrismaClient) {
       const key = digest({ post: postedDigest(data), replaces });
       return persistence(() =>
         db.$transaction(async (tx) => {
+          await lockOwner(tx, ownerId);
           await lockStrategy(tx, ownerId, strategyId);
           const seen = await tx.eventRevision.findFirst({
             where: { id: commandId, strategyId },
@@ -459,6 +822,25 @@ export function createJournal(db: PrismaClient) {
             return seen.eventId;
           }
           const row = await getRow(tx, ownerId, strategyId);
+          const imported =
+            replaces &&
+            row.events.some(
+              (event) => event.id === replaces.eventId && event.walletOrigin,
+            );
+          if (data.facts.txHash && !imported) {
+            requireFact(
+              !(await tx.journalEvent.findFirst({
+                where: {
+                  ownerId,
+                  chainId: row.chainId,
+                  txHash: data.facts.txHash,
+                  walletOrigin: { not: Prisma.DbNull },
+                },
+                select: { id: true },
+              })),
+              "This transaction was already imported as a receipt group.",
+            );
+          }
           const { newEntry, evaluation, events, ledger, prior } = candidate(
             row,
             data,

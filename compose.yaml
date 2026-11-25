@@ -5,6 +5,8 @@ x-app-environment: &app-environment
   BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
   BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
   COINGECKO_DEMO_KEY: ${COINGECKO_DEMO_KEY:-}
+  ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:-}
+  BASE_RPC_URL: ${BASE_RPC_URL:-}
 
 services:
   db:

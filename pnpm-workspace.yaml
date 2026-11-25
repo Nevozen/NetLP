@@ -18,3 +18,4 @@ minimumReleaseAgeExclude:
   - better-auth@1.7.28
   - lucide-react@1.79.0
   - recharts@3.11.1
+  - viem@2.58.6

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { referenceAsset } from "@/domain/catalog";
-import type { EventResult } from "@/domain/ledger";
+import { compareEntries, type EventResult } from "@/domain/ledger";
 import { type Market, type PriceVector, tokens } from "@/domain/model";
 import { eventNames, positionsStates } from "@/domain/presentation";
 import { divide, tokenPrice } from "@/domain/values";
@@ -127,8 +127,7 @@ export const activity = (cycles: StrategyView[]): Activity[] =>
     .flatMap((cycle) => cycle.ledger.results.map((line) => ({ cycle, line })))
     .sort(
       (a, b) =>
-        b.line.entry.at.localeCompare(a.line.entry.at) ||
-        b.line.entry.sequence - a.line.entry.sequence ||
+        compareEntries(b.line.entry, a.line.entry) ||
         a.cycle.id.localeCompare(b.cycle.id),
     );
 
@@ -180,6 +179,9 @@ export function JournalTable({
                   )}
                   {entry.facts.group && (
                     <small className="muted block">{entry.facts.group}</small>
+                  )}
+                  {entry.walletOrigin && (
+                    <small className="muted block">Base wallet import</small>
                   )}
                 </td>
                 <td>

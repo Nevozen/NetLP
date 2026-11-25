@@ -4,6 +4,7 @@ import { EventEditor } from "@/components/editor";
 import { Quotes } from "@/components/reports";
 import { Badge, PageHeader, Panel } from "@/components/ui";
 import { eventNames } from "@/domain/presentation";
+import { baseTransactionUrl } from "@/lib/base-explorer";
 import { displayTime } from "@/lib/time";
 import { editFields } from "@/server/form-data";
 import { getCycle } from "@/server/workspace";
@@ -39,6 +40,30 @@ export default async function EventDetails({
         Posted facts and reference prices are immutable. Correct an open cycle
         by adding a reasoned revision.
       </PageHeader>
+      {event.entry.walletOrigin && event.entry.facts.txHash && (
+        <Panel title="Base wallet provenance">
+          <div className="stack">
+            <p className="wallet-id">
+              Block {event.entry.walletOrigin.blockNumber} (
+              {event.entry.walletOrigin.blockHash})
+            </p>
+            <small className="muted">
+              Transaction index {event.entry.walletOrigin.txIndex}, action{" "}
+              {event.entry.facts.actionIndex}, decoder v
+              {event.entry.walletOrigin.decoderVersion}. Sources:{" "}
+              {event.entry.walletOrigin.sources.join(", ")}.
+            </small>
+            <a
+              className="link"
+              href={baseTransactionUrl(event.entry.facts.txHash)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              View on BaseScan
+            </a>
+          </div>
+        </Panel>
+      )}
       <Panel title="Revision history">
         {history.map((revision) => (
           <details
