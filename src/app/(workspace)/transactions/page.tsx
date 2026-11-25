@@ -2,6 +2,7 @@ import Link from "next/link";
 import { get, type Query } from "@/components/filters";
 import { activity, JournalTable, pairName } from "@/components/reports";
 import { Button, PageHeader, Panel } from "@/components/ui";
+import { WalletActivity } from "@/components/wallet-activity";
 import { eventNames } from "@/domain/presentation";
 import { getWorkspace } from "@/server/workspace";
 
@@ -13,7 +14,11 @@ export default async function Transactions({
   searchParams: Promise<Query>;
 }) {
   const { user, journal } = await getWorkspace();
-  const [cycles, q] = await Promise.all([journal.list(user.id), searchParams]);
+  const q = await searchParams;
+  const showWallet =
+    get(q, "view") === "wallet" ||
+    (!get(q, "view") && !get(q, "strategy") && !get(q, "kind") && !get(q, "q"));
+  const cycles = showWallet ? [] : await journal.list(user.id);
   const open = cycles.filter((c) => !c.closedAt);
   const search = get(q, "q").trim().toLowerCase();
   const all = activity(cycles).filter(
@@ -34,7 +39,7 @@ export default async function Transactions({
     ? Math.max(1, Number(get(q, "page")))
     : 1;
   const paramsFor = (p: number) =>
-    `/transactions?${new URLSearchParams({ q: get(q, "q"), kind: get(q, "kind"), strategy: get(q, "strategy"), page: String(p) })}`;
+    `/transactions?${new URLSearchParams({ view: "journal", q: get(q, "q"), kind: get(q, "kind"), strategy: get(q, "strategy"), page: String(p) })}`;
   return (
     <>
       <PageHeader
@@ -54,68 +59,92 @@ export default async function Transactions({
           </Button>
         }
       >
-        A chronological journal of what moved, what it cost, and how each event
-        was priced.
+        Read wallet activity or view reviewed journal entries and their costs.
       </PageHeader>
-      <Panel title="Posted journal">
-        <form className="filter" method="get">
-          <label className="field">
-            Search
-            <input
-              type="search"
-              name="q"
-              defaultValue={get(q, "q")}
-              placeholder="Notes, group, or transaction hash"
-            />
-          </label>
-          <label className="field">
-            Strategy
-            <select name="strategy" defaultValue={get(q, "strategy")}>
-              <option value="">All</option>
-              {cycles.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            Event type
-            <select name="kind" defaultValue={get(q, "kind")}>
-              <option value="">All</option>
-              {Object.entries(eventNames).map(([k, v]) => (
-                <option key={k} value={k}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="actions">
-            <Button type="submit" tone="outline">
-              Apply filters
-            </Button>
-          </div>
-        </form>
-        <JournalTable
-          items={all.slice((page - 1) * 50, page * 50)}
+      <nav aria-label="Transactions views" className="chips">
+        <Link
+          href="/transactions?view=wallet"
+          className={`button ${showWallet ? "button-primary" : "button-outline"}`}
+          aria-current={showWallet ? "page" : undefined}
+        >
+          Wallet activity
+        </Link>
+        <Link
+          href="/transactions?view=journal"
+          className={`button ${!showWallet ? "button-primary" : "button-outline"}`}
+          aria-current={!showWallet ? "page" : undefined}
+        >
+          Posted journal
+        </Link>
+      </nav>
+      {showWallet ? (
+        <WalletActivity
+          userId={user.id}
           zone={user.settings.timezone}
+          query={q}
         />
-        {(page > 1 || all.length > 50) && (
-          <div className="actions">
-            <span>Page {page}</span>
-            {page > 1 && (
-              <Link className="link" href={paramsFor(page - 1)}>
-                Previous
-              </Link>
-            )}
-            {all.length > page * 50 && (
-              <Link className="link" href={paramsFor(page + 1)}>
-                Next
-              </Link>
-            )}
-          </div>
-        )}
-      </Panel>
+      ) : (
+        <Panel title="Posted journal">
+          <form className="filter" method="get">
+            <input type="hidden" name="view" value="journal" />
+            <label className="field">
+              Search
+              <input
+                type="search"
+                name="q"
+                defaultValue={get(q, "q")}
+                placeholder="Notes, group, or transaction hash"
+              />
+            </label>
+            <label className="field">
+              Strategy
+              <select name="strategy" defaultValue={get(q, "strategy")}>
+                <option value="">All</option>
+                {cycles.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              Event type
+              <select name="kind" defaultValue={get(q, "kind")}>
+                <option value="">All</option>
+                {Object.entries(eventNames).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="actions">
+              <Button type="submit" tone="outline">
+                Apply filters
+              </Button>
+            </div>
+          </form>
+          <JournalTable
+            items={all.slice((page - 1) * 50, page * 50)}
+            zone={user.settings.timezone}
+          />
+          {(page > 1 || all.length > 50) && (
+            <div className="actions">
+              <span>Page {page}</span>
+              {page > 1 && (
+                <Link className="link" href={paramsFor(page - 1)}>
+                  Previous
+                </Link>
+              )}
+              {all.length > page * 50 && (
+                <Link className="link" href={paramsFor(page + 1)}>
+                  Next
+                </Link>
+              )}
+            </div>
+          )}
+        </Panel>
+      )}
     </>
   );
 }

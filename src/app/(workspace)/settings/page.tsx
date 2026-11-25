@@ -1,12 +1,18 @@
 import { setPreferences } from "@/app/actions";
 import { Button, PageHeader, Panel } from "@/components/ui";
+import { WalletSettings } from "@/components/wallet-controls";
 import { denominations } from "@/domain/catalog";
 import { requireUser } from "@/server/session";
+import { database } from "@/server/db";
+import { baseEndpoints } from "@/server/onchain/base-rpc";
+import { createWalletStore } from "@/server/onchain/wallet-store";
 
 export const metadata = { title: "Settings" };
 
 export default async function Settings() {
-  const { settings } = await requireUser();
+  const { id, settings } = await requireUser();
+  const watch = await createWalletStore(database()).watch(id);
+  const capabilities = baseEndpoints();
   const cities = [
     ...new Set([
       settings.timezone,
@@ -55,6 +61,14 @@ export default async function Settings() {
             <Button type="submit">Save preferences</Button>
           </div>
         </form>
+      </Panel>
+      <Panel title="Base wallet activity" label="READ-ONLY IMPORT">
+        <WalletSettings
+          watched={watch?.address ?? ""}
+          enabled={watch?.enabled ?? true}
+          canSync={!!capabilities.rpc && !!capabilities.indexer}
+          canVerify={!!capabilities.rpc}
+        />
       </Panel>
     </>
   );

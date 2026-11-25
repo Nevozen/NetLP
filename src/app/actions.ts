@@ -1,6 +1,5 @@
 "use server";
 
-import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
@@ -24,6 +23,7 @@ import {
 } from "@/server/form-data";
 import { createJournal, MissingRecord } from "@/server/journal";
 import { collectPrices } from "@/server/pricing";
+import { limitOwnerRequest } from "@/server/request-limit";
 import { requireUser } from "@/server/session";
 
 export type FormState = {
@@ -73,18 +73,10 @@ async function quotes(
     );
   }
   if (Object.values(choices).some((choice) => choice.mode === "AUTO")) {
-    const now = BigInt(Date.now());
-    const rate = await database().$queryRaw<
-      { count: number }[]
-    >`INSERT INTO "RateLimit" (id, key, count, "lastRequest")
-      VALUES (${randomUUID()}, ${`price:${ownerId}`}, 1, ${now})
-      ON CONFLICT (key) DO UPDATE SET
-        count = CASE WHEN "RateLimit"."lastRequest" < ${now - 60_000n} THEN 1 ELSE "RateLimit".count + 1 END,
-        "lastRequest" = CASE WHEN "RateLimit"."lastRequest" < ${now - 60_000n} THEN ${now} ELSE "RateLimit"."lastRequest" END
-      WHERE "RateLimit"."lastRequest" < ${now - 60_000n} OR "RateLimit".count < 20
-      RETURNING count`;
-    requireFact(
-      rate.length,
+    await limitOwnerRequest(
+      `price:${ownerId}`,
+      20,
+      60_000,
       "Automatic pricing is temporarily rate-limited. Wait a minute or use manual pricing.",
     );
   }
@@ -182,7 +174,9 @@ export async function writeEvent(
         : undefined;
       const correction =
         eventId && reason ? { eventId, version, reason } : undefined;
-      const at = localTimestamp(f, user.settings.timezone);
+      const at = prior?.entry.walletOrigin
+        ? prior.entry.at
+        : localTimestamp(f, user.settings.timezone);
       const facts = factsFrom(
         f,
         cycle.market,

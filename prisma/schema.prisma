@@ -123,28 +123,30 @@ model WalletWatch {
 }
 
 model WalletActivity {
-  id          String         @id @default(uuid()) @db.Uuid
-  ownerId     String
-  chainId     String
-  address     String
-  txHash      String
-  sources     WalletSource[]
-  status      WalletStatus   @default(DETECTED)
-  ignored     Boolean        @default(false)
-  revision    Int            @default(0)
-  blockNumber BigInt?
-  blockHash   String?
-  txIndex     Int?
-  occurredAt  DateTime?      @db.Timestamptz(3)
-  topLevel    Boolean        @default(false)
-  hasTokens   Boolean        @default(false)
-  hasNfts     Boolean        @default(false)
-  evidence    Json?
-  draft       Json?
-  retryAt     DateTime?      @db.Timestamptz(3)
-  attempts    Int            @default(0)
-  createdAt   DateTime       @default(now()) @db.Timestamptz(3)
-  watch       WalletWatch    @relation(fields: [ownerId, chainId], references: [ownerId, chainId], onDelete: Restrict)
+  id               String         @id @default(uuid()) @db.Uuid
+  ownerId          String
+  chainId          String
+  address          String
+  txHash           String
+  sources          WalletSource[]
+  status           WalletStatus   @default(DETECTED)
+  ignored          Boolean        @default(false)
+  revision         Int            @default(0)
+  blockNumber      BigInt?
+  blockHash        String?
+  txIndex          Int?
+  occurredAt       DateTime?      @db.Timestamptz(3)
+  topLevel         Boolean        @default(false)
+  hasTokens        Boolean        @default(false)
+  hasNfts          Boolean        @default(false)
+  evidence         Json?
+  draft            Json?
+  retryAt          DateTime?      @db.Timestamptz(3)
+  attempts         Int            @default(0)
+  postedStrategyId String?        @db.Uuid
+  postedEventIds   String[]       @default([]) @db.Uuid
+  createdAt        DateTime       @default(now()) @db.Timestamptz(3)
+  watch            WalletWatch    @relation(fields: [ownerId, chainId], references: [ownerId, chainId], onDelete: Restrict)
 
   @@unique([ownerId, chainId, address, txHash])
   @@index([ownerId, chainId, address, status, retryAt])
@@ -152,8 +154,8 @@ model WalletActivity {
 }
 
 model Strategy {
-  id            String           @id @db.Uuid
-  requestDigest String           @db.Char(64)
+  id            String               @id @db.Uuid
+  requestDigest String               @db.Char(64)
   ownerId       String
   chainId       String
   market        Json
@@ -162,14 +164,15 @@ model Strategy {
   notes         String?
   walletAddress String?
   positionRef   String?
-  openedAt      DateTime         @db.Timestamptz(3)
-  closedAt      DateTime?        @db.Timestamptz(3)
-  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
-  owner         User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  openedAt      DateTime             @db.Timestamptz(3)
+  closedAt      DateTime?            @db.Timestamptz(3)
+  createdAt     DateTime             @default(now()) @db.Timestamptz(3)
+  owner         User                 @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   events        JournalEvent[]
   quotes        PriceSet[]
   drafts        JournalDraft[]
   final         FinalEvaluation?
+  walletReviews WalletImportReview[]
 
   @@unique([id, ownerId, chainId])
   @@index([ownerId, closedAt, openedAt])
@@ -186,6 +189,7 @@ model JournalEvent {
   txHash        String?
   actionIndex   Int?
   hasNetworkFee Boolean
+  walletOrigin  Json?
   strategy      Strategy        @relation(fields: [strategyId, ownerId, chainId], references: [id, ownerId, chainId], onDelete: Restrict)
   revisions     EventRevision[]
 
@@ -193,6 +197,19 @@ model JournalEvent {
   @@unique([strategyId, sequence])
   @@unique([ownerId, chainId, txHash, actionIndex])
   @@index([strategyId, occurredAt, sequence])
+}
+
+model WalletImportReview {
+  id         String    @id @default(uuid()) @db.Uuid
+  ownerId    String
+  chainId    String
+  strategyId String    @db.Uuid
+  data       Json?
+  expiresAt  DateTime  @db.Timestamptz(3)
+  postedAt   DateTime? @db.Timestamptz(3)
+  strategy   Strategy  @relation(fields: [strategyId, ownerId, chainId], references: [id, ownerId, chainId], onDelete: Restrict)
+
+  @@index([ownerId, expiresAt])
 }
 
 model EventRevision {

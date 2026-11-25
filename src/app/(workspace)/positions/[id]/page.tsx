@@ -59,6 +59,11 @@ export default async function StrategyDetails({
       </PageHeader>
       <nav className="chips" aria-label="Strategy sections">
         <CycleStatus cycle={cycle} />
+        {market.chainId === "8453" && !cycle.closedAt && (
+          <Link className="link" href="/transactions?view=wallet">
+            Import wallet activity
+          </Link>
+        )}
         <a className="link" href="#ledger">
           Ledger
         </a>

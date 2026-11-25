@@ -3,8 +3,12 @@ import Link from "next/link";
 import { LockKeyhole } from "lucide-react";
 import { AccountNavigation, Navigation } from "@/components/navigation";
 import { Brand } from "@/components/ui";
+import { WalletPoller } from "@/components/wallet-controls";
 import { denominations } from "@/domain/catalog";
 import { requireUser } from "@/server/session";
+import { database } from "@/server/db";
+import { baseEndpoints } from "@/server/onchain/base-rpc";
+import { createWalletStore } from "@/server/onchain/wallet-store";
 import { setPreferences } from "../actions";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +19,14 @@ export default async function WorkspaceLayout({
   children: ReactNode;
 }) {
   const user = await requireUser();
+  const provider = baseEndpoints();
+  const store = createWalletStore(database());
+  const watch = provider.rpc && (await store.watch(user.id));
+  const poll =
+    watch &&
+    watch.enabled &&
+    (!!provider.indexer ||
+      (await store.counts(user.id, watch.address)).pending > 0);
   return (
     <div className="workspace" data-theme={user.settings.theme}>
       <a className="skip" href="#content">
@@ -60,7 +72,7 @@ export default async function WorkspaceLayout({
           </form>
         </header>
         <main id="content" className="content">
-          {children}
+          <WalletPoller enabled={Boolean(poll)}>{children}</WalletPoller>
         </main>
         <footer className="footer">
           <span>LPStacks / Wardana Dev</span>

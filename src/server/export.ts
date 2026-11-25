@@ -74,7 +74,7 @@ export function strategyCsv(cycle: StrategyView) {
     tokens(cycle.market).find((t) => t.id === id)?.symbol ?? id;
   for (const { entry, walletDelta, earned, received, swap } of cycle.ledger
     .results) {
-    const { id, at, facts, prices } = entry;
+    const { id, at, facts, prices, walletOrigin } = entry;
     const version = cycle.events.find((e) => e.entry.id === id)!.version;
     row(
       "event",
@@ -86,7 +86,14 @@ export function strategyCsv(cycle: StrategyView) {
       swap?.shortfall,
       swap ? "Event-time execution shortfall" : undefined,
       `Revision ${version}; gas ${facts.gas}`,
-      [facts.txHash, facts.actionIndex?.toString(), facts.group, facts.notes]
+      [
+        facts.txHash,
+        facts.actionIndex?.toString(),
+        walletOrigin &&
+          `Base block ${walletOrigin.blockNumber} (${walletOrigin.blockHash}), transaction index ${walletOrigin.txIndex}, decoder v${walletOrigin.decoderVersion}, sources ${walletOrigin.sources.join("/")}`,
+        facts.group,
+        facts.notes,
+      ]
         .filter(Boolean)
         .join(" | "),
     );

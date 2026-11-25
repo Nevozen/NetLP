@@ -30,6 +30,9 @@ export default defineConfig({
       BETTER_AUTH_SECRET: secret,
       HOSTNAME: "127.0.0.1",
       PORT: "3167",
+      ALCHEMY_API_KEY: "lpstacks_browser_fixture",
+      BASE_RPC_URL: "",
+      NODE_OPTIONS: `--import "${new URL("./tests/e2e/base-provider.mjs", import.meta.url).href}"`,
     },
   },
 });

@@ -84,21 +84,24 @@ export function createWalletSync(
     rpc,
     discover,
     classify,
+    signal,
   }: {
     rpc: BaseReader | null;
     discover: WalletDiscovery | null;
     classify?: Classify;
+    signal?: AbortSignal;
   },
   clock = () => new Date(),
 ) {
   return async (ownerId: string) => {
-    if (!rpc) return { changed: false };
+    if (!rpc || signal?.aborted) return;
     const lease = randomUUID();
     const start = clock();
     const watch = await db.$transaction(async (tx) => {
       const current = await lockWatch(tx, ownerId);
       if (
         !current ||
+        signal?.aborted ||
         (current.leaseUntil && current.leaseUntil > start) ||
         (current.nextSyncAt && current.nextSyncAt > start)
       )
@@ -125,7 +128,7 @@ export function createWalletSync(
         },
       });
     });
-    if (!watch) return { changed: false };
+    if (!watch) return;
 
     const scope = walletScope(ownerId, watch.address);
     const commit = <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>) =>
@@ -135,12 +138,12 @@ export function createWalletSync(
           current?.lease !== lease ||
           current.generation !== watch.generation ||
           !current.leaseUntil ||
-          current.leaseUntil <= clock()
+          current.leaseUntil <= clock() ||
+          signal?.aborted
         )
           throw new LeaseLost();
         return fn(tx);
       });
-    let changed = false;
     let issue: ProviderError | undefined;
     try {
       await rpc.assertChain();
@@ -165,13 +168,8 @@ export function createWalletSync(
             });
             const step = scanPage(cursor, page.pageKey);
             if (step.through !== undefined) next = max(next, step.through);
-            const processed = await commit(async (tx) => {
-              const queued = await queueHashes(
-                tx,
-                scope,
-                page.hashes,
-                "ALCHEMY",
-              );
+            await commit(async (tx) => {
+              await queueHashes(tx, scope, page.hashes, "ALCHEMY");
               await tx.walletWatch.update({
                 where: watchKey(ownerId),
                 data: {
@@ -180,9 +178,7 @@ export function createWalletSync(
                   cursor: step.cursor ?? Prisma.DbNull,
                 },
               });
-              return queued.added;
             });
-            changed ||= processed > 0;
             cursor = step.cursor;
           }
           if (watch.startBlock === null && !cursor) {
@@ -319,7 +315,7 @@ export function createWalletSync(
                   draft: assessment?.draft ?? Prisma.DbNull,
                 };
               }
-              const updated = await commit((tx) =>
+              await commit((tx) =>
                 tx.walletActivity.updateMany({
                   where: {
                     ...scope,
@@ -330,7 +326,6 @@ export function createWalletSync(
                   data: { ...data, revision: { increment: 1 } },
                 }),
               );
-              changed ||= updated.count > 0;
             } catch (error) {
               if (!(error instanceof ProviderError)) throw error;
               issue ??= error;
@@ -355,7 +350,7 @@ export function createWalletSync(
         }
       }
     } catch (error) {
-      if (error instanceof LeaseLost) return { changed };
+      if (error instanceof LeaseLost || signal?.aborted) return;
       if (!(error instanceof ProviderError)) throw error;
       issue ??= error;
     } finally {
@@ -370,22 +365,18 @@ export function createWalletSync(
         data: {
           lease: null,
           leaseUntil: null,
-          ...(issue
-            ? {
-                issue: issue.message,
-                nextSyncAt: new Date(
-                  +now + (issue.kind === "CURSOR" ? MIN_INTERVAL : BACKOFF),
-                ),
-              }
-            : { issue: null, lastSyncedAt: now }),
+          ...(signal?.aborted
+            ? { nextSyncAt: null }
+            : issue
+              ? {
+                  issue: issue.message,
+                  nextSyncAt: new Date(
+                    +now + (issue.kind === "CURSOR" ? MIN_INTERVAL : BACKOFF),
+                  ),
+                }
+              : { issue: null, lastSyncedAt: now }),
         },
       });
     }
-    return {
-      changed:
-        changed ||
-        !watch.lastSyncedAt ||
-        watch.issue !== (issue?.message ?? null),
-    };
   };
 }

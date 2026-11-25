@@ -79,7 +79,12 @@ export function observations(
       }
       const result = history.closedAt
         ? cycle.evaluation
-        : evaluate(cycle.market, history, entry.at, entry.prices);
+        : evaluate(
+            cycle.market,
+            history,
+            entry.at,
+            history.results.at(-1)!.entry.prices,
+          );
       const values = asset ? result.equivalents[asset.id] : result;
       if (
         values.netWealth === null ||

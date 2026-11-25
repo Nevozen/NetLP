@@ -47,12 +47,25 @@ export interface EventResult {
   swap: ReturnType<typeof execution> | null;
 }
 
-function chronological(a: Entry, b: Entry) {
-  return a.at.localeCompare(b.at) || a.sequence - b.sequence;
+export function compareEntries(a: Entry, b: Entry) {
+  const time = a.at.localeCompare(b.at);
+  if (time) return time;
+  if (a.walletOrigin && b.walletOrigin) {
+    const left = BigInt(a.walletOrigin.blockNumber);
+    const right = BigInt(b.walletOrigin.blockNumber);
+    if (left !== right) return left < right ? -1 : 1;
+    return (
+      a.walletOrigin.txIndex - b.walletOrigin.txIndex ||
+      (a.facts.actionIndex ?? 0) - (b.facts.actionIndex ?? 0) ||
+      a.sequence - b.sequence
+    );
+  }
+  if (a.walletOrigin || b.walletOrigin) return a.walletOrigin ? 1 : -1;
+  return a.sequence - b.sequence;
 }
 
 function sorted(entries: Entry[]) {
-  return [...entries].sort(chronological);
+  return [...entries].sort(compareEntries);
 }
 
 export function replay(market: Market, entries: Entry[]) {
